@@ -11,6 +11,8 @@ try:
     
 except:
     from FakeGPIO import FakeGPIO as GPIO
+    print "\tNot running on a PI"
+        
     Pi=False
 
 NUM_CHANNELS=18
@@ -35,17 +37,27 @@ class SignInterface(object):
     def setActive(self,on):
         if on:
             self.hardwareActive(on)
-        for l in self.leds:
+        for k,l in self.leds.iteritems():
             l.setActive(on)
         if not on:
             self.hardwareActive(on)
 
     def setLED(self,name,pwm):
+        self.leds[name].setIntensity(pwm)
+    
+    def output(self):
         pass
-    def flip(self):
-        pass
+    
     def getLEDs(self):
         return {}
+    
+    def fillNow(self,intensity=0):
+        for k,l in self.leds.iteritems():
+            l.setIntensity(intensity)
+        self.update()
+
+    def getLedKeys(self):
+        return self.leds.keys()
 
 
 
@@ -54,6 +66,7 @@ class SignInterface(object):
 class VideoSign(SignInterface):
 
     def __init__(self):
+        SignInterface.__init__(self)
         self.images={}
         for fileName in glob.glob("images/*"):
             imageId=fileName.replace("\\","/").split("/")[-1].split(".")[0]
@@ -72,7 +85,7 @@ class VideoSign(SignInterface):
 
         pygame.display.init()
 
-        self.size = (pygame.display.Info().current_w, pygame.display.Info().current_h)
+        self.size = (1000,900) #pygame.display.Info().current_w, pygame.display.Info().current_h)
         #self.size=(1280,1024) #(800,600)
         #self.window = pygame.display.set_mode(self.size, pygame.FULLSCREEN | pygame.HWSURFACE) #|pygame.DOUBLEBUF)
         self.window = pygame.display.set_mode(self.size, pygame.HWSURFACE) #|pygame.DOUBLEBUF)
@@ -82,10 +95,10 @@ class VideoSign(SignInterface):
 
         
     #pwm is 8 bit but intensity adjusted
-    def setLED(self,index,pwm):
-        pass
+    def setLED(self,name,intensity):
+        self.leds[name].setIntensity(intensity)
 
-    def flip(self):
+    def output(self):
         self.render()
         pygame.display.flip()
         #pygame.display.update()
@@ -93,8 +106,8 @@ class VideoSign(SignInterface):
     def render(self):
         color=(0,0,0)   #erase last 
         self.window.fill(color,(0,0,self.size[0],self.size[1]))
-        for led in self.leds:
-            led.output()
+        for k,l in self.leds.iteritems():
+            l.output(self.window)
             
 
 
@@ -107,8 +120,8 @@ class LetteredVideoSign(VideoSign):
             self.font=font
             self.pos=(x,y)
 
-        def output(self):
-            img=self.font.render( char , 1,(self.intensity,self.intensity,self.intensity))
+        def output(self,window):
+            img=self.font.render( self.char , 1,(self.intensity,self.intensity,self.intensity))
             window.blit(img,self.pos)
 
 
@@ -118,7 +131,7 @@ class LetteredVideoSign(VideoSign):
             self.image=image
             self.pos=(x,y)
     
-        def output(self):
+        def output(self,window):
             if self.intensity>20:
                 window.blit(self.image,self.pos)
 
@@ -127,13 +140,9 @@ class LetteredVideoSign(VideoSign):
 class RaspberryPiLEDSign(SignInterface):
     
     class GPIODirectLetter(LightSegment):
-        def __init__(self,name,bits,litLevel):
+        def __init__(self,name,pins,litLevel):
             LightSegment.__init__(self,name)
-            self.bits=bits
-            self.pinList=[]
-            for n in range(32):
-                if bits & (1<<n):
-                    self.pinList.append(n)
+            self.pinList=pins
             self.litLevel=litLevel  #1=on or 0=on 
 
         def setActive(self,on):
@@ -151,12 +160,13 @@ class RaspberryPiLEDSign(SignInterface):
 
 
     class TPICShifterLetter(LightSegment):
-        def __init__(self,name,pin,tpicChip):
+        def __init__(self,name,pins,tpicChip):
             LightSegment.__init__(self,name)
-            self.pin=pin
             self.tpicChip=tpicChip
-            self.litLevel=1<<pin
-            
+            self.litLevel=0
+            for p in pins:
+                self.litLevel|= (1<<p)
+                
         def output(self):
             if self.intensity>128:
                 self.tpicChip.reg|= self.litLevel
@@ -164,42 +174,103 @@ class RaspberryPiLEDSign(SignInterface):
                 self.tpicChip.reg&= ~self.litLevel
         
     class TPICChip(object):
-        def __init__(self):
+        TPIC_PWM_RATE=500
+
+        def __init__(self,gpioClk,gpioData,gpioStrobe,gpioEnable):
             self.reg=0
+            self.gpioClk=gpioClk
+            self.gpioData=gpioData
+            self.gpioStrobe=gpioStrobe
+            self.gpioEnable=gpioEnable
+            self.pwm=GPIO.PWM(gpioEnable,self.TPIC_PWM_RATE)
+            self.pwmLevel=100
 
+        def setActive(self,on):
+            if on:
+                self.pwm.stop()
+            else:
+                self.pwm.stop()
 
-    
-        
-    #pwm is 8 bit but intensity adjusted
-    def setLED(self,index,pwm):
-        pass
-
-    def flip(self):
-        #pygame.display.update()
-
-    def off(self):
-        pygame.display.quit()
-
-    
-
-class ThatCampOverThereLEDSign(LEDSign):
+        def serialize(self):
+            bit=1
+            while bit<0x100:
+                GPIO.output( self.gpioData, self.reg&bit )
+                GPIO.output( self.gpioClk, 1)
+                GPIO.output( self.gpioClk, 0)
+                bit<<=1
+        def strobe(self):
+            GPIO.output( self.gpioStrobe, 1)
+            GPIO.output( self.gpioStrobe, 0)
+            self.pwm.start(self.pwmLevel)
 
     def __init__(self):
-        LEDSign.__init__(self)
+        SignInterface.__init__(self)
+        self.leds=self.getLEDs()
 
-        self.tpicChipA=self.TPICChip()
-        self.tpicChipB=self.TPICChip()
+
+    def hardwareActive(self,on):
+        pass
+
+    #pwm is 8 bit but intensity adjusted
+    def setLED(self,name,pwm):
+        self.leds[name].setIntensity(pwm)
+
+    def output(self):
+        for k,l in self.leds.iteritems():
+            l.output()
+        self.outputShifters()
+
+    def outputShifters(self):
+        pass #override
+
+    
+    
+
+class ThatCampOverThereLEDSign(RaspberryPiLEDSign):
+
+    def __init__(self):
+        self.tpicChipA=self.TPICChip(9,10,11,0)
+        self.tpicChipB=self.TPICChip(9,10,11,7)
+        RaspberryPiLEDSign.__init__(self)
+        #sets GPIO outputs for TPICs
         
 
     def getLEDs(self):
-        lettermap={
-            "T": self.TPICShifterLetter( "T1", (1<<0)|(1<<1) ),
-            "H": self.GPIODirectLetter ( "H1", (1 , 1 ),
-            "A": self.GPIODirectLetter ( "H1", 1 , 1 ),
-        }
+        letters=[
+            #NEED fixing with real pin ids
+            self.TPICShifterLetter( "T1", [0,1]    ,self.tpicChipB),
+            self.GPIODirectLetter ( "H1", [1]      , 1 ),
+            self.GPIODirectLetter ( "A1", [4]      , 1 ),
+            self.TPICShifterLetter( "T2", [2,3]    ,self.tpicChipB),
+            self.GPIODirectLetter ( "C1", [14]     , 1 ),
+            self.GPIODirectLetter ( "A2", [23]     , 1 ),
+            self.GPIODirectLetter ( "M1", [18]     , 1 ),
+            self.TPICShifterLetter( "P1", [4,6,7]  ,self.tpicChipB),
+            self.TPICShifterLetter( "o1", [0]      ,self.tpicChipA),
+            self.TPICShifterLetter( "v1", [1]      ,self.tpicChipA ),
+            self.TPICShifterLetter( "e1", [2]      ,self.tpicChipA ),
+            self.TPICShifterLetter( "r1", [3]      ,self.tpicChipA ),
+            self.TPICShifterLetter( "t1", [4]      ,self.tpicChipA ),
+            self.TPICShifterLetter( "h1", [5]      ,self.tpicChipA ),
+            self.TPICShifterLetter( "e2", [6]      ,self.tpicChipA ),
+            self.TPICShifterLetter( "r2", [7]      ,self.tpicChipA ),
+            self.TPICShifterLetter( "e3", [5]      ,self.tpicChipB ),
+            self.GPIODirectLetter ( "01", [8]      , 1 ),
+            self.GPIODirectLetter ( "11", [25]     , 1 ),
+            self.GPIODirectLetter ( "21", [24]     , 1 ),
+            self.GPIODirectLetter ( "31", [15]     , 1 ),
+        ]
+        lettermap={}
+        for l in letters:
+            lettermap[l.name]=l
+        return lettermap;
+        
+    def outputShifters(self):
+        self.tpicChipB.serialize()
+        self.tpicChipA.serialize()
+        self.tpicChipA.strobe()
+        
 
-        return 
-            
 
 
 class ThatCampOverThereVideoSign(LetteredVideoSign):
@@ -209,6 +280,7 @@ class ThatCampOverThereVideoSign(LetteredVideoSign):
         y=0
         text=[ "THAT","CAMP","over there","0123" ]
         letteridx={}
+        leds={}
         map={}
         cx=x    
         for line in text:
@@ -221,34 +293,20 @@ class ThatCampOverThereVideoSign(LetteredVideoSign):
                         cidx=0
                     cidx+=1
                     letteridx[char]=cidx
-                    letterKey="%s%d" % (char,letteridx)
+                    letterKey="%s%d" % (char,cidx)
                     
                     if char.isdigit():
                         img=self.images["arrow"]
                         letter=self.ImageLetter( letterKey,img,cx,y)
                     else:
                         letter=self.TextLetter( letterKey,char,self.font,cx,y)
-                    letteridx[letterKey]=letter
+                    leds[letterKey]=letter
                 cx+=self.fontW
             y+=self.fontH
             cx=x
-        print letteridx
-        return letteridx
+        return leds
 
 
-            
-class RaspberryPiDriver(SignInterface):
-    def __init__(self):
-        pass
-
-
-class ThatCampOverThereLEDSign(LEDSign):
-
-    
-    def getLEDs(self):
-        text=[ "THAT","CAMP","over there","0123" ]
-        
-        return 
             
 
 
@@ -267,7 +325,7 @@ class CampSign(object):
         
         self.interfaces=[]
         self.interfaces.append( ThatCampOverThereVideoSign() )
-        self.interfaces.append( LEDSign() )
+        self.interfaces.append( ThatCampOverThereLEDSign() )
 
         self.run()
         
@@ -278,6 +336,7 @@ class CampSign(object):
         time.sleep(0.5)
     
     """
+    #prerender to blits is faster if required
     def renderDigits(self):
         self.digits={}
         for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ|<>":
@@ -324,13 +383,20 @@ class CampSign(object):
 
     def updateDisplay(self):
         for i in self.interfaces:
-            i.flip()
-        
-        
+            i.output()
+            
 
     def runLogic(self):
-        for 
-        pass
+        leds=self.interfaces[0].getLedKeys()
+        now=int(time.time())
+        val=0
+        if now&2:
+            val=255
+        for l in leds:
+            self.interfaces[0].setLED( l , val )
+            self.interfaces[1].setLED( l , val )
+
+
         """
         x=0
         y=0

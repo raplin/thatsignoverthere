@@ -8,6 +8,8 @@ class FakeGPIO(object):
     PUD_UP=0
     FALLING=0
 
+    DEBUG=True
+
     class pwMEH(object):
         def start(self,eh):
             pass
@@ -31,7 +33,8 @@ class FakeGPIO(object):
 
     @classmethod
     def output(cls,meh,eh):
-        pass
+        if cls.DEBUG:
+            print "GPIO %d %d"% (meh,eh)
 
     @classmethod
     def setup(cls,pin,meh,pull_up_down=False):
